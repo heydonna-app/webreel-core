@@ -7,6 +7,9 @@ export interface ChromeInstance {
 }
 export interface LaunchChromeOptions {
     headless?: boolean;
+    /** Persistent Chrome profile dir. Overrides WEBREEL_USER_DATA_DIR env var.
+     *  When set, the dir is NOT deleted on kill() — cookies/localStorage persist. */
+    userDataDir?: string;
 }
 export declare function launchChrome(options?: LaunchChromeOptions): Promise<ChromeInstance>;
 //# sourceMappingURL=chrome.d.ts.map

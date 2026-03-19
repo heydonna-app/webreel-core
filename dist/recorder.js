@@ -149,11 +149,17 @@ export class Recorder {
                     if (!evalResult)
                         break;
                 }
-                const screenshotResult = await this.raceStop(client.Page.captureScreenshot({
-                    format: "jpeg",
-                    quality: 60,
-                    optimizeForSpeed: true,
-                }));
+                // Wrap captureScreenshot with a 2s timeout so SPA navigations that
+                // defer paint indefinitely don't hang the captureLoop forever.
+                const screenshotWithTimeout = Promise.race([
+                    client.Page.captureScreenshot({
+                        format: "jpeg",
+                        quality: 60,
+                        optimizeForSpeed: true,
+                    }),
+                    new Promise((_, reject) => setTimeout(() => reject(new Error("captureScreenshot timeout")), 2000)),
+                ]);
+                const screenshotResult = await this.raceStop(screenshotWithTimeout);
                 if (!screenshotResult)
                     break;
                 const buffer = Buffer.from(screenshotResult.data, "base64");
@@ -181,10 +187,12 @@ export class Recorder {
                 if (!this.running)
                     break;
                 consecutiveErrors++;
-                if (consecutiveErrors >= 10) {
+                if (consecutiveErrors >= 3000) {
                     console.error(`Recording aborted after ${consecutiveErrors} consecutive capture failures:`, err);
                     break;
                 }
+                // Brief pause to let SPA navigation / page-load settle before retrying
+                await new Promise((r) => setTimeout(r, 50));
             }
         }
     }

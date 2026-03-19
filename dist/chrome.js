@@ -159,10 +159,17 @@ const MAX_LAUNCH_ATTEMPTS = 3;
 export async function launchChrome(options) {
     const headless = options?.headless ?? true;
     const chromePath = headless ? await ensureHeadlessShell() : await ensureChrome();
+    // Support persistent profile via option or WEBREEL_USER_DATA_DIR env var.
+    // When persistent, Chrome retains cookies/localStorage across runs (e.g. Clerk session).
+    const persistentUserDataDir = options?.userDataDir ?? process.env.WEBREEL_USER_DATA_DIR;
+    if (persistentUserDataDir) {
+        const { mkdirSync } = await import("node:fs");
+        mkdirSync(persistentUserDataDir, { recursive: true });
+    }
     let lastError = null;
     for (let attempt = 1; attempt <= MAX_LAUNCH_ATTEMPTS; attempt++) {
         const port = await findFreePort();
-        const userDataDir = mkdtempSync(join(tmpdir(), "webreel-chrome-"));
+        const userDataDir = persistentUserDataDir ?? mkdtempSync(join(tmpdir(), "webreel-chrome-"));
         const args = headless
             ? [
                 `--remote-debugging-port=${port}`,
@@ -221,16 +228,20 @@ export async function launchChrome(options) {
                 port,
                 kill: () => {
                     proc.kill("SIGTERM");
-                    setTimeout(() => {
-                        rmSync(userDataDir, { recursive: true, force: true });
-                    }, 500);
+                    if (!persistentUserDataDir) {
+                        setTimeout(() => {
+                            rmSync(userDataDir, { recursive: true, force: true });
+                        }, 500);
+                    }
                 },
             };
         }
         catch (err) {
             lastError = err;
             proc.kill("SIGKILL");
-            rmSync(userDataDir, { recursive: true, force: true });
+            if (!persistentUserDataDir) {
+                rmSync(userDataDir, { recursive: true, force: true });
+            }
             if (attempt < MAX_LAUNCH_ATTEMPTS) {
                 await new Promise((r) => setTimeout(r, 500 * attempt));
             }

@@ -351,6 +351,22 @@ export async function clickAt(ctx, client, x, y, modifiers) {
         expression: `(() => {
       var el = document.elementFromPoint(${x}, ${y});
       if (!el) return;
+      // Pierce shadow DOM to find the actual target element (e.g. WaveSurfer canvas)
+      while (el.shadowRoot) {
+        var shadowEl = el.shadowRoot.elementFromPoint(${x}, ${y});
+        if (!shadowEl || shadowEl === el) break;
+        el = shadowEl;
+        // Walk up to the nearest ancestor with a click listener.
+        // elementFromPoint returns the topmost visual element (e.g. a <canvas>),
+        // but click handlers are often on a parent container (.wrapper, [part="wrapper"]).
+        // Dispatching on the canvas causes the click to bubble — but headless Chrome
+        // doesn't always propagate synthetic events through shadow DOM reliably.
+        // Dispatching directly on .wrapper is guaranteed to fire its listener.
+        if (el.closest) {
+          var wrapperEl = el.closest('.wrapper') || el.closest('[part="wrapper"]');
+          if (wrapperEl) el = wrapperEl;
+        }
+      }
       if (!${shiftFlag}) {
         var sel = window.getSelection();
         if (sel && sel.rangeCount) {
