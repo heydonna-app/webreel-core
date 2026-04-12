@@ -165,7 +165,11 @@ export class Recorder {
                 const buffer = Buffer.from(screenshotResult.data, "base64");
                 const now = Date.now();
                 const elapsed = now - lastFrameTime;
-                const frameSlots = Math.min(3, Math.max(1, Math.round(elapsed / this.frameMs)));
+                // Cap at fps*5 (5 seconds) to prevent runaway duplication from
+                // process suspension, while filling normal CDP capture gaps (~780ms).
+                // The original cap of 3 was far too low for headed Chrome captures
+                // that take ~780ms per frame at 60fps (needing ~47 slots per capture).
+                const frameSlots = Math.min(this.fps * 5, Math.max(1, Math.round(elapsed / this.frameMs)));
                 if (frameSlots > 1) {
                     for (let i = 0; i < frameSlots - 1; i++) {
                         if (this.timeline)
