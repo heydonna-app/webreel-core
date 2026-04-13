@@ -27,6 +27,9 @@ export class Recorder {
     framesDir = null;
     stopResolve = null;
     stoppedPromise = null;
+    // Wall-clock frame fill: track recording start and last frame for deficit fill
+    recordingStartMs = 0;
+    lastFrameBuffer = null;
     constructor(outputWidth = DEFAULT_VIEWPORT_SIZE, outputHeight = DEFAULT_VIEWPORT_SIZE, options) {
         this.outputWidth = outputWidth;
         this.outputHeight = outputHeight;
@@ -135,6 +138,8 @@ export class Recorder {
         return result;
     }
     async captureLoop(client) {
+        this.recordingStartMs = Date.now();
+        console.log(`[captureLoop] recording started at ${this.recordingStartMs}`);
         let lastFrameTime = Date.now();
         let consecutiveErrors = 0;
         while (this.running) {
@@ -163,15 +168,22 @@ export class Recorder {
                 if (!screenshotResult)
                     break;
                 const buffer = Buffer.from(screenshotResult.data, "base64");
+                this.lastFrameBuffer = buffer;
                 const now = Date.now();
                 const elapsed = now - lastFrameTime;
-                // Cap at fps*5 (5 seconds) to prevent runaway duplication from
-                // process suspension, while filling normal CDP capture gaps (~780ms).
-                // The original cap of 3 was far too low for headed Chrome captures
-                // that take ~780ms per frame at 60fps (needing ~47 slots per capture).
-                const frameSlots = Math.min(this.fps * 5, Math.max(1, Math.round(elapsed / this.frameMs)));
-                if (frameSlots > 1) {
-                    for (let i = 0; i < frameSlots - 1; i++) {
+                // Wall-clock cumulative frame fill: calculate how many total frames
+                // SHOULD exist by now based on wall time since recording started.
+                // This absorbs CDP contention gaps automatically — if captures happen
+                // in rapid bursts (30ms apart, 2 slots each), the first capture after
+                // a gap fills the entire deficit. No time is ever lost to capping.
+                //
+                // Cap at fps*60 (60 seconds) per capture to prevent runaway duplication
+                // from process suspension (e.g., laptop sleep).
+                const wallElapsedMs = now - this.recordingStartMs;
+                const expectedTotalFrames = Math.round(wallElapsedMs / this.frameMs);
+                const framesToEmit = Math.max(1, Math.min(this.fps * 60, expectedTotalFrames - this.frameCount));
+                if (framesToEmit > 1) {
+                    for (let i = 0; i < framesToEmit - 1; i++) {
                         if (this.timeline)
                             this.timeline.tickDuplicate();
                         await this.writeFrame(buffer);
@@ -216,6 +228,32 @@ export class Recorder {
             this.stopResolve = null;
         }
         await this.capturePromise;
+        // Fill wall-clock deficit: emit frames for the gap between last capture
+        // and stop() call. Write directly to ffmpeg stdin (bypass writeFrame which
+        // checks this.running).
+        const recordingEndMs = Date.now();
+        const recordingDurationMs = recordingEndMs - (this.recordingStartMs || recordingEndMs);
+        console.log(`[captureLoop] recording stopped. duration=${recordingDurationMs}ms, frames=${this.frameCount}, videoDuration=${(this.frameCount / this.fps).toFixed(1)}s`);
+        if (this.lastFrameBuffer && this.recordingStartMs > 0) {
+            const wallDurationMs = Date.now() - this.recordingStartMs;
+            const expectedFrames = Math.round(wallDurationMs / this.frameMs);
+            const deficit = expectedFrames - this.frameCount;
+            if (deficit > 0 && deficit < this.fps * 60) {
+                console.log(`[captureLoop] filling ${deficit} deficit frames (${(deficit / this.fps).toFixed(1)}s) to match wall-clock`);
+                const stdin = this.ffmpegProcess?.stdin;
+                if (stdin?.writable) {
+                    for (let i = 0; i < deficit; i++) {
+                        const ok = stdin.write(this.lastFrameBuffer);
+                        if (!ok)
+                            await new Promise((r) => stdin.once("drain", r));
+                        this.frameCount++;
+                        if (this.timeline)
+                            this.timeline.tickDuplicate();
+                    }
+                }
+                console.log(`[captureLoop] after fill: frames=${this.frameCount}, videoDuration=${(this.frameCount / this.fps).toFixed(1)}s`);
+            }
+        }
         if (this.droppedFrames > 0) {
             console.warn(`Warning: ${this.droppedFrames} frame(s) dropped during recording`);
         }
